@@ -3,14 +3,13 @@
  Self-Pruning Neural Network on CIFAR-10
  Tredence Analytics – AI Engineering Internship Case Study
 =============================================================================
- Author  : (Your Name)
+ Author  : (Mruthun)
  Date    : 2026
  Purpose : Demonstrate learned weight pruning via sigmoid-gated linear layers
            trained with an L1 sparsity regulariser (λ penalty).
 =============================================================================
 """
 
-# ── Imports ──────────────────────────────────────────────────────────────────
 import os
 import copy
 import numpy as np
@@ -23,19 +22,14 @@ from torch.utils.data import Subset
 import torchvision
 import torchvision.transforms as transforms
 
-# ── Reproducibility ───────────────────────────────────────────────────────────
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
-# ── Device ────────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using device: {DEVICE}")
 
 
-# =============================================================================
-# 1.  PrunableLinear – Custom Gated Linear Layer
-# =============================================================================
 class PrunableLinear(nn.Module):
     """
     A drop-in replacement for nn.Linear that learns *which weights to prune*.
@@ -56,26 +50,22 @@ class PrunableLinear(nn.Module):
         self.in_features  = in_features
         self.out_features = out_features
 
-        # Standard weight + bias (same initialisation as nn.Linear)
         self.weight      = nn.Parameter(torch.empty(out_features, in_features))
         self.bias_param  = nn.Parameter(torch.zeros(out_features)) if bias else None
 
-        # Gate scores – one per weight element; initialised near 0 so that
-        # σ(0) ≈ 0.5 (all gates half-open at the start of training)
         self.gate_scores = nn.Parameter(torch.zeros(out_features, in_features))
 
-        # Kaiming uniform for the weight tensor (standard PyTorch default)
         nn.init.kaiming_uniform_(self.weight, a=np.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass:
-          1. gates        = σ(gate_scores)           ∈ (0, 1)
-          2. pruned_weight = weight ⊙ gates           element-wise
-          3. output        = x @ pruned_weight.T + bias
+            1. gates        = σ(gate_scores)           ∈ (0, 1)
+            2. pruned_weight = weight ⊙ gates           element-wise
+            3. output        = x @ pruned_weight.T + bias
         """
-        gates         = torch.sigmoid(self.gate_scores)      # (out, in)
-        pruned_weight = self.weight * gates                   # (out, in)
+        gates = torch.sigmoid(self.gate_scores)
+        pruned_weight = self.weight * gates
         return nn.functional.linear(x, pruned_weight, self.bias_param)
 
     def get_gates(self) -> torch.Tensor:
@@ -93,9 +83,6 @@ class PrunableLinear(nn.Module):
                 f"bias={self.bias_param is not None}")
 
 
-# =============================================================================
-# 2.  Neural Network – CNN feature extractor + PrunableLinear classifier head
-# =============================================================================
 class PrunableNet(nn.Module):
     """
     A lightweight CNN for CIFAR-10.
@@ -113,23 +100,17 @@ class PrunableNet(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # ── Convolutional feature extractor ──────────────────────────────────
         self.features = nn.Sequential(
-            # Block 1
             nn.Conv2d(3, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),          # 32×32 → 16×16
-
-            # Block 2
+            nn.MaxPool2d(2, 2),
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),          # 16×16 → 8×8
+            nn.MaxPool2d(2, 2),
         )
-        # After both pools: 64 × 8 × 8 = 4096 features
 
-        # ── Prunable classifier head ──────────────────────────────────────────
         self.prunable1 = PrunableLinear(64 * 8 * 8, 256)
         self.relu1     = nn.ReLU(inplace=True)
         self.dropout   = nn.Dropout(0.3)
@@ -137,12 +118,11 @@ class PrunableNet(nn.Module):
         self.prunable2 = PrunableLinear(256, 128)
         self.relu2     = nn.ReLU(inplace=True)
 
-        # Plain output layer (not prunable – keep classification head stable)
         self.output    = nn.Linear(128, 10)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
-        x = x.view(x.size(0), -1)          # flatten
+        x = x.view(x.size(0), -1)
         x = self.relu1(self.prunable1(x))
         x = self.dropout(x)
         x = self.relu2(self.prunable2(x))
@@ -162,9 +142,6 @@ class PrunableNet(nn.Module):
         return (gates < threshold).float().mean().item()
 
 
-# =============================================================================
-# 3.  Loss Utilities
-# =============================================================================
 def sparsity_loss(model: PrunableNet) -> torch.Tensor:
     """
     L1 norm of ALL sigmoid gate values across every PrunableLinear layer.
@@ -174,7 +151,7 @@ def sparsity_loss(model: PrunableNet) -> torch.Tensor:
     """
     total = torch.tensor(0.0, device=DEVICE)
     for layer in model.prunable_layers():
-        gates = torch.sigmoid(layer.gate_scores)   # keep in computation graph
+        gates = torch.sigmoid(layer.gate_scores)
         total = total + gates.abs().sum()
     return total
 
@@ -192,9 +169,6 @@ def total_loss(logits: torch.Tensor,
     return clf_loss + lam * spar_loss
 
 
-# =============================================================================
-# 4.  Data Loading
-# =============================================================================
 def get_dataloaders(batch_size: int = 128,
                     num_workers: int | None = None,
                     max_train_samples: int | None = None,
@@ -237,7 +211,6 @@ def get_dataloaders(batch_size: int = 128,
         test_set = Subset(test_set, list(range(max_test_samples)))
 
     if num_workers is None:
-        # On Windows/CPU-only runs, worker subprocess start-up can be slow.
         num_workers = 0 if os.name == "nt" else 2
 
     pin_memory = torch.cuda.is_available()
@@ -251,9 +224,6 @@ def get_dataloaders(batch_size: int = 128,
     return train_loader, test_loader
 
 
-# =============================================================================
-# 5.  Training & Evaluation
-# =============================================================================
 def train_one_epoch(model: PrunableNet,
                     loader: DataLoader,
                     optimizer: optim.Optimizer,
@@ -323,7 +293,6 @@ def train_model(lam: float,
 
         train_losses.append(epoch_loss)
 
-        # Track the best checkpoint
         if test_acc > best_acc:
             best_acc   = test_acc
             best_state = copy.deepcopy(model.state_dict())
@@ -334,7 +303,6 @@ def train_model(lam: float,
                   f"Test Acc: {test_acc*100:.2f}% | "
                   f"Sparsity: {sparsity*100:.1f}%")
 
-    # Restore best checkpoint for final evaluation
     model.load_state_dict(best_state)
     final_acc      = evaluate(model, test_loader)
     final_sparsity = model.network_sparsity()
@@ -351,9 +319,6 @@ def train_model(lam: float,
     }
 
 
-# =============================================================================
-# 6.  Plotting
-# =============================================================================
 def plot_gate_distribution(model: PrunableNet, lam: float, save_path: str):
     """
     Plot a histogram of all gate values (σ(gate_scores)) for *model*.
@@ -407,9 +372,6 @@ def plot_training_curves(results: list, save_path: str):
     print(f"[INFO] Training curves saved -> {save_path}")
 
 
-# =============================================================================
-# 7.  Report Generation
-# =============================================================================
 def print_results_table(results: list):
     """Print a nicely-formatted results table to stdout."""
     print("\n" + "="*55)
@@ -420,15 +382,10 @@ def print_results_table(results: list):
     print("="*55 + "\n")
 
 
-# =============================================================================
-# 8.  Main
-# =============================================================================
 def main():
-    # ── Hyper-parameters ──────────────────────────────────────────────────────
-    FAST_RUN = True  # Set to False for full experiment quality.
+    FAST_RUN = True
 
     if FAST_RUN:
-        # CPU-friendly settings to finish quickly.
         LAMBDA_VALUES = [1e-5, 1e-4, 1e-3]
         NUM_EPOCHS = 2
         BATCH_SIZE = 512
@@ -445,36 +402,29 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     print(f"[INFO] FAST_RUN={FAST_RUN} | epochs={NUM_EPOCHS} | batch_size={BATCH_SIZE}")
 
-    # ── Data ─────────────────────────────────────────────────────────────────
     train_loader, test_loader = get_dataloaders(
         batch_size=BATCH_SIZE,
         max_train_samples=MAX_TRAIN_SAMPLES,
         max_test_samples=MAX_TEST_SAMPLES,
     )
 
-    # ── Training loop ────────────────────────────────────────────────────────
     results = []
     for lam in LAMBDA_VALUES:
         res = train_model(lam, train_loader, test_loader, num_epochs=NUM_EPOCHS)
         results.append(res)
 
-    # ── Results table ────────────────────────────────────────────────────────
     print_results_table(results)
 
-    # ── Identify the best model (highest test accuracy) ───────────────────────
     best_result = max(results, key=lambda r: r["test_acc"])
     print(f"[INFO] Best model -> lambda = {best_result['lam']} "
           f"(Acc: {best_result['test_acc']:.2f}%)")
 
-    # ── Plots ────────────────────────────────────────────────────────────────
-    # Gate distribution of the best model
     plot_gate_distribution(
         model     = best_result["model"],
         lam       = best_result["lam"],
         save_path = os.path.join(OUTPUT_DIR, "gate_distribution_best.png"),
     )
 
-    # Training loss curves for all λ
     plot_training_curves(
         results   = results,
         save_path = os.path.join(OUTPUT_DIR, "training_curves.png"),
