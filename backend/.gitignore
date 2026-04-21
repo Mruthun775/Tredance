@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+train.log
+train.err
+outputs/
+data/

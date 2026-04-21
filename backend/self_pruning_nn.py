@@ -398,7 +398,7 @@ def main():
         MAX_TRAIN_SAMPLES = None
         MAX_TEST_SAMPLES = None
 
-    OUTPUT_DIR    = "outputs"
+    OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     print(f"[INFO] FAST_RUN={FAST_RUN} | epochs={NUM_EPOCHS} | batch_size={BATCH_SIZE}")
 
