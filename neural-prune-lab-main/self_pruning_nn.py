@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data import Subset
 import torchvision
 import torchvision.transforms as transforms
 
@@ -194,7 +195,10 @@ def total_loss(logits: torch.Tensor,
 # =============================================================================
 # 4.  Data Loading
 # =============================================================================
-def get_dataloaders(batch_size: int = 128):
+def get_dataloaders(batch_size: int = 128,
+                    num_workers: int | None = None,
+                    max_train_samples: int | None = None,
+                    max_test_samples: int | None = None):
     """
     Download CIFAR-10 and return (train_loader, test_loader).
 
@@ -217,15 +221,33 @@ def get_dataloaders(batch_size: int = 128):
         transforms.Normalize(mean, std),
     ])
 
+    data_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
     train_set = torchvision.datasets.CIFAR10(
-        root="./data", train=True,  download=True, transform=train_transform)
+        root=data_root, train=True,  download=True, transform=train_transform)
     test_set  = torchvision.datasets.CIFAR10(
-        root="./data", train=False, download=True, transform=test_transform)
+        root=data_root, train=False, download=True, transform=test_transform)
+
+    if max_train_samples is not None:
+        max_train_samples = min(max_train_samples, len(train_set))
+        train_set = Subset(train_set, list(range(max_train_samples)))
+
+    if max_test_samples is not None:
+        max_test_samples = min(max_test_samples, len(test_set))
+        test_set = Subset(test_set, list(range(max_test_samples)))
+
+    if num_workers is None:
+        # On Windows/CPU-only runs, worker subprocess start-up can be slow.
+        num_workers = 0 if os.name == "nt" else 2
+
+    pin_memory = torch.cuda.is_available()
 
     train_loader = DataLoader(train_set, batch_size=batch_size,
-                              shuffle=True,  num_workers=2, pin_memory=True)
+                              shuffle=True,  num_workers=num_workers,
+                              pin_memory=pin_memory)
     test_loader  = DataLoader(test_set,  batch_size=256,
-                              shuffle=False, num_workers=2, pin_memory=True)
+                              shuffle=False, num_workers=num_workers,
+                              pin_memory=pin_memory)
     return train_loader, test_loader
 
 
@@ -281,7 +303,7 @@ def train_model(lam: float,
       • 'train_losses'– list of per-epoch losses
     """
     print(f"\n{'='*60}")
-    print(f"  Training with λ = {lam}")
+    print(f"  Training with lambda = {lam}")
     print(f"{'='*60}")
 
     model     = PrunableNet().to(DEVICE)
@@ -317,8 +339,8 @@ def train_model(lam: float,
     final_acc      = evaluate(model, test_loader)
     final_sparsity = model.network_sparsity()
 
-    print(f"\n  ✔ Final Test Accuracy : {final_acc*100:.2f}%")
-    print(f"  ✔ Final Sparsity      : {final_sparsity*100:.1f}%")
+    print(f"\n  [OK] Final Test Accuracy : {final_acc*100:.2f}%")
+    print(f"  [OK] Final Sparsity      : {final_sparsity*100:.1f}%")
 
     return {
         "lam"         : lam,
@@ -360,7 +382,7 @@ def plot_gate_distribution(model: PrunableNet, lam: float, save_path: str):
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
-    print(f"[INFO] Gate distribution plot saved → {save_path}")
+    print(f"[INFO] Gate distribution plot saved -> {save_path}")
 
 
 def plot_training_curves(results: list, save_path: str):
@@ -382,7 +404,7 @@ def plot_training_curves(results: list, save_path: str):
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
-    print(f"[INFO] Training curves saved → {save_path}")
+    print(f"[INFO] Training curves saved -> {save_path}")
 
 
 # =============================================================================
@@ -403,14 +425,32 @@ def print_results_table(results: list):
 # =============================================================================
 def main():
     # ── Hyper-parameters ──────────────────────────────────────────────────────
-    LAMBDA_VALUES = [1e-5, 1e-4, 1e-3]   # low, medium, high sparsity pressure
-    NUM_EPOCHS    = 20                    # increase for better accuracy
-    BATCH_SIZE    = 128
+    FAST_RUN = True  # Set to False for full experiment quality.
+
+    if FAST_RUN:
+        # CPU-friendly settings to finish quickly.
+        LAMBDA_VALUES = [1e-5, 1e-4, 1e-3]
+        NUM_EPOCHS = 2
+        BATCH_SIZE = 512
+        MAX_TRAIN_SAMPLES = 2000
+        MAX_TEST_SAMPLES = 500
+    else:
+        LAMBDA_VALUES = [1e-5, 1e-4, 1e-3]   # low, medium, high sparsity pressure
+        NUM_EPOCHS = 20                        # increase for better accuracy
+        BATCH_SIZE = 128
+        MAX_TRAIN_SAMPLES = None
+        MAX_TEST_SAMPLES = None
+
     OUTPUT_DIR    = "outputs"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"[INFO] FAST_RUN={FAST_RUN} | epochs={NUM_EPOCHS} | batch_size={BATCH_SIZE}")
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    train_loader, test_loader = get_dataloaders(batch_size=BATCH_SIZE)
+    train_loader, test_loader = get_dataloaders(
+        batch_size=BATCH_SIZE,
+        max_train_samples=MAX_TRAIN_SAMPLES,
+        max_test_samples=MAX_TEST_SAMPLES,
+    )
 
     # ── Training loop ────────────────────────────────────────────────────────
     results = []
@@ -423,7 +463,7 @@ def main():
 
     # ── Identify the best model (highest test accuracy) ───────────────────────
     best_result = max(results, key=lambda r: r["test_acc"])
-    print(f"[INFO] Best model → λ = {best_result['lam']} "
+    print(f"[INFO] Best model -> lambda = {best_result['lam']} "
           f"(Acc: {best_result['test_acc']:.2f}%)")
 
     # ── Plots ────────────────────────────────────────────────────────────────
@@ -441,7 +481,7 @@ def main():
     )
 
     print("\n[INFO] All outputs saved to ./outputs/")
-    print("[INFO] Done ✔")
+    print("[INFO] Done [OK]")
 
 
 if __name__ == "__main__":
